@@ -349,13 +349,13 @@ parse_set_cookie_test_() ->
 cookie([]) ->
 	[];
 cookie([{<<>>, Value}]) ->
-	[Value];
+	[ensure_value(Value)];
 cookie([{Name, Value}]) ->
-	[Name, $=, Value];
+	[ensure_name(Name), $=, ensure_value(Value)];
 cookie([{<<>>, Value}|Tail]) ->
-	[Value, $;, $\s|cookie(Tail)];
+	[ensure_value(Value), $;, $\s|cookie(Tail)];
 cookie([{Name, Value}|Tail]) ->
-	[Name, $=, Value, $;, $\s|cookie(Tail)].
+	[ensure_name(Name), $=, ensure_value(Value), $;, $\s|cookie(Tail)].
 
 -ifdef(TEST).
 cookie_test_() ->
@@ -368,6 +368,28 @@ cookie_test_() ->
 	],
 	[{Res, fun() -> Res = iolist_to_binary(cookie(Cookies)) end}
 		|| {Cookies, Res} <- Tests].
+
+cookie_crlf_injection_test_() ->
+	F = fun(Cookies) ->
+		try cookie(Cookies) of
+			_ -> false
+		catch _:_ ->
+			true
+		end
+	end,
+	Tests = [
+		[{<<"sid">>, <<"x\r\nX-Injected: 1">>}],
+		[{<<"sid">>, <<"x\nX-Injected: 1">>}],
+		[{<<"sid\r\n">>, <<"value">>}],
+		[{<<"sid">>, <<"a; admin=1">>}],
+		[{<<"sid">>, <<"a b">>}],
+		[{<<"s id">>, <<"value">>}],
+		[{<<>>, <<"a b">>}],
+		[{<<"sid">>, <<"a b">>}, {<<"c">>, <<"d">>}]
+	],
+	[{iolist_to_binary(io_lib:format("crlf injection via cookie/1: ~p", [C])),
+		fun() -> true = F(C) end}
+		|| C <- Tests].
 -endif.
 
 %% Convert a cookie name, value and options to its iodata form.
@@ -381,17 +403,12 @@ cookie_test_() ->
 
 -spec setcookie(iodata(), iodata(), cookie_opts()) -> iolist().
 setcookie(Name, Value, Opts) ->
-	nomatch = binary:match(iolist_to_binary(Name), [<<$=>>, <<$,>>, <<$;>>,
-			<<$\s>>, <<$\t>>, <<$\r>>, <<$\n>>, <<$\013>>, <<$\014>>]),
-	nomatch = binary:match(iolist_to_binary(Value), [<<$,>>, <<$;>>,
-			<<$\s>>, <<$\t>>, <<$\r>>, <<$\n>>, <<$\013>>, <<$\014>>]),
-	[Name, <<"=">>, Value, attributes(maps:to_list(Opts))].
+	[ensure_name(Name), <<"=">>, ensure_value(Value),
+		attributes(maps:to_list(Opts))].
 
 attributes([]) -> [];
-attributes([{domain, Domain0}|Tail]) ->
-	Domain = iolist_to_binary(Domain0),
-	nomatch = binary:match(Domain, <<$;>>),
-	[<<"; Domain=">>, Domain|attributes(Tail)];
+attributes([{domain, Domain}|Tail]) ->
+	[<<"; Domain=">>, ensure_attr_value(Domain)|attributes(Tail)];
 attributes([{http_only, false}|Tail]) -> attributes(Tail);
 attributes([{http_only, true}|Tail]) -> [<<"; HttpOnly">>|attributes(Tail)];
 %% MSIE requires an Expires date in the past to delete a cookie.
@@ -403,10 +420,8 @@ attributes([{max_age, MaxAge}|Tail]) when is_integer(MaxAge), MaxAge > 0 ->
 	[<<"; Expires=">>, Expires, <<"; Max-Age=">>, integer_to_list(MaxAge)|attributes(Tail)];
 attributes([Opt={max_age, _}|_]) ->
 	error({badarg, Opt});
-attributes([{path, Path0}|Tail]) ->
-	Path = iolist_to_binary(Path0),
-	nomatch = binary:match(Path, <<$;>>),
-	[<<"; Path=">>, Path|attributes(Tail)];
+attributes([{path, Path}|Tail]) ->
+	[<<"; Path=">>, ensure_attr_value(Path)|attributes(Tail)];
 attributes([{secure, false}|Tail]) -> attributes(Tail);
 attributes([{secure, true}|Tail]) -> [<<"; Secure">>|attributes(Tail)];
 attributes([{same_site, default}|Tail]) -> attributes(Tail);
@@ -502,9 +517,33 @@ setcookie_attr_failures_test_() ->
 	Tests = [
 		#{path => <<"/a; Secure">>},
 		#{domain => <<"ex.com; Path=/">>},
-		#{path => [<<"/a">>, <<";HttpOnly">>]}
+		#{path => [<<"/a">>, <<";HttpOnly">>]},
+		#{path => <<"/foo\r\nSet-Cookie: admin=1">>},
+		#{path => <<"/foo\nSet-Cookie: admin=1">>},
+		#{domain => <<"example.org\r\nSet-Cookie: admin=1">>},
+		#{domain => <<"example.org\nSet-Cookie: admin=1">>}
 	],
 	[{iolist_to_binary(io_lib:format("~p failure", [O])),
 		fun() -> true = F(O) end}
 		|| O <- Tests].
 -endif.
+
+%% Validation functions.
+
+ensure_name(Name0) ->
+	Name = iolist_to_binary(Name0),
+	nomatch = binary:match(Name, [<<$=>>, <<$,>>, <<$;>>,
+		<<$\s>>, <<$\t>>, <<$\r>>, <<$\n>>, <<$\013>>, <<$\014>>]),
+	Name.
+
+ensure_value(Value0) ->
+	Value = iolist_to_binary(Value0),
+	nomatch = binary:match(Value, [<<$,>>, <<$;>>,
+		<<$\s>>, <<$\t>>, <<$\r>>, <<$\n>>, <<$\013>>, <<$\014>>]),
+	Value.
+
+ensure_attr_value(Value0) ->
+	Value = iolist_to_binary(Value0),
+	nomatch = binary:match(Value, [<<$;>>,
+		<<$\r>>, <<$\n>>, <<$\013>>, <<$\014>>]),
+	Value.
