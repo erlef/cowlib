@@ -233,6 +233,15 @@ decode_reject_eos_test() ->
 	?assertError(_, decode(<<16#0085f2b24a84ff874951fffffffa7f:120>>)),
 	ok.
 
+decode_reject_very_big_int_test() ->
+	VeryBigInt0 = binary:copy(<<16#ff>>, 32767),
+	VeryBigInt = <<VeryBigInt0/binary, 16#7f>>,
+	garbage_collect(),
+	Prev = process_flag(max_heap_size, #{size => 10_000, kill => true}),
+	?assertError(_, decode(VeryBigInt)),
+	process_flag(max_heap_size, Prev),
+	ok.
+
 decode_lit_index_dynamic_name_test() ->
 	%% Fill the dynamic table with two entries:
 	%% x-name-a: v1, then x-name-b: v1.

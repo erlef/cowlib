@@ -29,6 +29,10 @@
 %% The HPACK format has 4 different integer prefixes length (from 4 to 7)
 %% and each can be used to create an indefinite length integer if all bits
 %% of the prefix are set to 1.
+%%
+%% We hard limit indefinite length integers to 38bits. The maximum
+%% possible value is large enough for normal use cases and does
+%% not produce an Erlang big int.
 
 dec_int5(<<2#11111:5, Rest/bits>>) ->
 	dec_big_int(Rest, 31, 0);
@@ -37,7 +41,7 @@ dec_int5(<<Int:5, Rest/bits>>) ->
 
 dec_big_int(<<0:1, Value:7, Rest/bits>>, Int, M) ->
 	{Int + (Value bsl M), Rest};
-dec_big_int(<<1:1, Value:7, Rest/bits>>, Int, M) ->
+dec_big_int(<<1:1, Value:7, Rest/bits>>, Int, M) when M < 32 ->
 	dec_big_int(Rest, Int + (Value bsl M), M + 7).
 
 %% Prefix encoding.
