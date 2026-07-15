@@ -2962,6 +2962,7 @@ ws_version_list(<<>>, Acc) -> lists:reverse(Acc);
 ws_version_list(<< C, R/bits >>, Acc) when ?IS_WS_COMMA(C) -> ws_version_list(R, Acc);
 ws_version_list(<< C, R/bits >>, Acc) when ?IS_DIGIT(C) -> ws_version(R, Acc, C - $0).
 
+ws_version(_, _, V) when V > 255 -> error(function_clause);
 ws_version(<< C, R/bits >>, Acc, V) when ?IS_DIGIT(C) -> ws_version(R, Acc, V * 10 + C - $0);
 ws_version(R, Acc, V) -> ws_version_list_sep(R, [V|Acc]).
 
@@ -2992,7 +2993,8 @@ parse_sec_websocket_version_resp_test_() ->
 
 parse_sec_websocket_version_resp_error_test_() ->
 	Tests = [
-		<<>>
+		<<>>,
+		<<"256">>
 	],
 	[{V, fun() -> ?assertError(_, parse_sec_websocket_version_resp(V)) end}
 		|| V <- Tests].
