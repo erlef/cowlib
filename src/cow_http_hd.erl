@@ -143,6 +143,10 @@
 -include("cow_inline.hrl").
 -include("cow_parse.hrl").
 
+%% The limit of 17 digits ensure the produced integer
+%% is not a big int.
+-define(MAX_DIGITS, 17).
+
 -ifdef(TEST).
 -include_lib("stdlib/include/assert.hrl").
 -include_lib("proper/include/proper.hrl").
@@ -963,7 +967,7 @@ horse_parse_access_control_request_method() ->
 %% Age header.
 
 -spec parse_age(binary()) -> non_neg_integer().
-parse_age(Age) ->
+parse_age(Age) when byte_size(Age) =< ?MAX_DIGITS ->
 	I = binary_to_integer(Age),
 	true = I >= 0,
 	I.
@@ -1189,19 +1193,17 @@ cache_directive_list(<< C, R/bits >>, Acc) when ?IS_TOKEN(C) ->
 cache_directive(<< $=, $", R/bits >>, Acc, T)
 		when (T =:= <<"no-cache">>) or (T =:= <<"private">>) ->
 	cache_directive_fields_list(R, Acc, T, []);
-cache_directive(<< $=, C, R/bits >>, Acc, T)
-		when ?IS_DIGIT(C), (T =:= <<"max-age">>) or (T =:= <<"max-stale">>)
+cache_directive(<< $=, R0/bits >>, Acc, T)
+		when (T =:= <<"max-age">>) or (T =:= <<"max-stale">>)
 			or (T =:= <<"min-fresh">>) or (T =:= <<"s-maxage">>)
 			or (T =:= <<"stale-while-revalidate">>) or (T =:= <<"stale-if-error">>) ->
-	cache_directive_delta(R, Acc, T, (C - $0));
+	{Delta, R} = digits(R0),
+	cache_directive_list_sep(R, [{T, Delta}|Acc]);
 cache_directive(<< $=, $", R/bits >>, Acc, T) -> cache_directive_quoted_string(R, Acc, T, <<>>);
 cache_directive(<< $=, C, R/bits >>, Acc, T) when ?IS_TOKEN(C) -> cache_directive_token(R, Acc, T, << C >>);
 cache_directive(<< C, R/bits >>, Acc, T) when ?IS_TOKEN(C) ->
 	?LOWER(cache_directive, R, Acc, T);
 cache_directive(R, Acc, T) -> cache_directive_list_sep(R, [T|Acc]).
-
-cache_directive_delta(<< C, R/bits >>, Acc, K, V) when ?IS_DIGIT(C) -> cache_directive_delta(R, Acc, K, V * 10 + (C - $0));
-cache_directive_delta(R, Acc, K, V) -> cache_directive_list_sep(R, [{K, V}|Acc]).
 
 cache_directive_fields_list(<< C, R/bits >>, Acc, K, L) when ?IS_WS_COMMA(C) -> cache_directive_fields_list(R, Acc, K, L);
 cache_directive_fields_list(<< $", R/bits >>, Acc, K, L) -> cache_directive_list_sep(R, [{K, lists:reverse(L)}|Acc]);
@@ -1695,7 +1697,7 @@ horse_parse_content_language() ->
 %% Content-Length header.
 
 -spec parse_content_length(binary()) -> non_neg_integer().
-parse_content_length(ContentLength) ->
+parse_content_length(ContentLength) when byte_size(ContentLength) =< ?MAX_DIGITS ->
 	I = binary_to_integer(ContentLength),
 	true = I >= 0,
 	I.
@@ -1744,24 +1746,21 @@ horse_parse_content_length_giga() ->
 -spec parse_content_range(binary())
 	-> {bytes, non_neg_integer(), non_neg_integer(), non_neg_integer() | '*'}
 	| {bytes, '*', non_neg_integer()} | {binary(), binary()}.
-parse_content_range(<<"bytes */", C, R/bits >>) when ?IS_DIGIT(C) -> unsatisfied_range(R, C - $0);
-parse_content_range(<<"bytes ", C, R/bits >>) when ?IS_DIGIT(C) -> byte_range_first(R, C - $0);
+parse_content_range(<<"bytes */", R/bits >>) ->
+	{Complete, <<>>} = digits(R),
+	{bytes, '*', Complete};
+parse_content_range(<<"bytes ", R0/bits >>) ->
+	{First, <<"-",R1/bits>>} = digits(R0),
+	{Last, <<"/",R/bits>>} = digits(R1),
+	case R of
+		<<"*">> ->
+			{bytes, First, Last, '*'};
+		_ ->
+			{Complete, <<>>} = digits(R),
+			{bytes, First, Last, Complete}
+	end;
 parse_content_range(<< C, R/bits >>) when ?IS_TOKEN(C) ->
 	?LOWER(other_content_range_unit, R, <<>>).
-
-byte_range_first(<< $-, C, R/bits >>, First) when ?IS_DIGIT(C) -> byte_range_last(R, First, C - $0);
-byte_range_first(<< C, R/bits >>, First) when ?IS_DIGIT(C) -> byte_range_first(R, First * 10 + C - $0).
-
-byte_range_last(<<"/*">>, First, Last) -> {bytes, First, Last, '*'};
-byte_range_last(<< $/, C, R/bits >>, First, Last) when ?IS_DIGIT(C) -> byte_range_complete(R, First, Last, C - $0);
-byte_range_last(<< C, R/bits >>, First, Last) when ?IS_DIGIT(C) -> byte_range_last(R, First, Last * 10 + C - $0).
-
-byte_range_complete(<<>>, First, Last, Complete) -> {bytes, First, Last, Complete};
-byte_range_complete(<< C, R/bits >>, First, Last, Complete) when ?IS_DIGIT(C) ->
-	byte_range_complete(R, First, Last, Complete * 10 + C - $0).
-
-unsatisfied_range(<<>>, Complete) -> {bytes, '*', Complete};
-unsatisfied_range(<< C, R/bits >>, Complete) when ?IS_DIGIT(C) -> unsatisfied_range(R, Complete * 10 + C - $0).
 
 other_content_range_unit(<< $\s, R/bits >>, Unit) -> other_content_range_resp(R, Unit, <<>>);
 other_content_range_unit(<< C, R/bits >>, Unit) when ?IS_TOKEN(C) ->
@@ -2127,13 +2126,17 @@ parse_host(<< $[, R/bits >>) ->
 parse_host(Host) ->
 	reg_name(Host, <<>>).
 
-ipv6_address(<< $] >>, IP) -> {<< IP/binary, $] >>, undefined};
-ipv6_address(<< $], $:, Port/bits >>, IP) -> {<< IP/binary, $] >>, binary_to_integer(Port)};
+ipv6_address(<< $] >>, IP) ->
+	{<< IP/binary, $] >>, undefined};
+ipv6_address(<< $], $:, Port/bits >>, IP) when byte_size(Port) =< 5 ->
+	{<< IP/binary, $] >>, binary_to_integer(Port)};
 ipv6_address(<< C, R/bits >>, IP) when ?IS_HEX(C) or (C =:= $:) or (C =:= $.) ->
 	?LOWER(ipv6_address, R, IP).
 
-reg_name(<<>>, Name) -> {Name, undefined};
-reg_name(<< $:, Port/bits >>, Name) -> {Name, binary_to_integer(Port)};
+reg_name(<<>>, Name) ->
+	{Name, undefined};
+reg_name(<< $:, Port/bits >>, Name) when byte_size(Port) =< 5 ->
+	{Name, binary_to_integer(Port)};
 reg_name(<< C, R/bits >>, Name) when ?IS_URI_UNRESERVED(C) or ?IS_URI_SUB_DELIMS(C) ->
 	?LOWER(reg_name, R, Name).
 
@@ -2369,7 +2372,7 @@ parse_link(Link) ->
 %% Max-Forwards header.
 
 -spec parse_max_forwards(binary()) -> non_neg_integer().
-parse_max_forwards(MaxForwards) ->
+parse_max_forwards(MaxForwards) when byte_size(MaxForwards) =< ?MAX_DIGITS ->
 	I = binary_to_integer(MaxForwards),
 	true = I >= 0,
 	I.
@@ -2452,9 +2455,9 @@ origin_reg_name(<< $:, Port/bits >>, Acc, Scheme, Name) ->
 origin_reg_name(<< C, R/bits >>, Acc, Scheme, Name) when ?IS_URI_UNRESERVED(C) or ?IS_URI_SUB_DELIMS(C) ->
 	?LOWER(origin_reg_name, R, Acc, Scheme, Name).
 
-origin_port(<<>>, Acc, Scheme, Host, Port) ->
+origin_port(<<>>, Acc, Scheme, Host, Port) when byte_size(Port) =< 5 ->
 	lists:reverse([{Scheme, Host, binary_to_integer(Port)}|Acc]);
-origin_port(<< $\s, R/bits >>, Acc, Scheme, Host, Port) ->
+origin_port(<< $\s, R/bits >>, Acc, Scheme, Host, Port) when byte_size(Port) =< 5 ->
 	origin_scheme(R, [{Scheme, Host, binary_to_integer(Port)}|Acc]);
 origin_port(<< C, R/bits >>, Acc, Scheme, Host, Port) when ?IS_DIGIT(C) ->
 	origin_port(R, Acc, Scheme, Host, << Port/binary, C >>).
@@ -2588,18 +2591,18 @@ parse_range(<< C, R/bits >>) when ?IS_TOKEN(C) ->
 
 bytes_range_set(<<>>, Acc) -> {bytes, lists:reverse(Acc)};
 bytes_range_set(<< C, R/bits >>, Acc) when ?IS_WS_COMMA(C) -> bytes_range_set(R, Acc);
-bytes_range_set(<< $-, C, R/bits >>, Acc) when ?IS_DIGIT(C) -> bytes_range_suffix_spec(R, Acc, C - $0);
-bytes_range_set(<< C, R/bits >>, Acc) when ?IS_DIGIT(C) -> bytes_range_spec(R, Acc, C - $0).
-
-bytes_range_spec(<< $-, C, R/bits >>, Acc, First) when ?IS_DIGIT(C) -> bytes_range_spec_last(R, Acc, First, C - $0);
-bytes_range_spec(<< $-, R/bits >>, Acc, First) -> bytes_range_set_sep(R, [{First, infinity}|Acc]);
-bytes_range_spec(<< C, R/bits >>, Acc, First) when ?IS_DIGIT(C) -> bytes_range_spec(R, Acc, First * 10 + C - $0).
-
-bytes_range_spec_last(<< C, R/bits >>, Acc, First, Last) when ?IS_DIGIT(C) -> bytes_range_spec_last(R, Acc, First, Last * 10 + C - $0);
-bytes_range_spec_last(R, Acc, First, Last) -> bytes_range_set_sep(R, [{First, Last}|Acc]).
-
-bytes_range_suffix_spec(<< C, R/bits >>, Acc, Suffix) when ?IS_DIGIT(C) -> bytes_range_suffix_spec(R, Acc, Suffix * 10 + C - $0);
-bytes_range_suffix_spec(R, Acc, Suffix) -> bytes_range_set_sep(R, [-Suffix|Acc]).
+bytes_range_set(<< $-, R0/bits >>, Acc) ->
+	{Suffix, R} = digits(R0),
+	bytes_range_set_sep(R, [-Suffix|Acc]);
+bytes_range_set(R0, Acc) ->
+	{First, <<"-",R1/bits>>} = digits(R0),
+	case R1 of
+		<<C,_/bits>> when ?IS_DIGIT(C) ->
+			{Last, R} = digits(R1),
+			bytes_range_set_sep(R, [{First, Last}|Acc]);
+		_ ->
+			bytes_range_set_sep(R1, [{First, infinity}|Acc])
+	end.
 
 bytes_range_set_sep(<<>>, Acc) -> {bytes, lists:reverse(Acc)};
 bytes_range_set_sep(<< C, R/bits >>, Acc) when ?IS_WS(C) -> bytes_range_set_sep(R, Acc);
@@ -2704,6 +2707,7 @@ horse_parse_range_other() ->
 
 -spec parse_retry_after(binary()) -> non_neg_integer() | calendar:datetime().
 parse_retry_after(RetryAfter = << D, _/bits >>) when ?IS_DIGIT(D) ->
+	true = byte_size(RetryAfter) =< ?MAX_DIGITS,
 	I = binary_to_integer(RetryAfter),
 	true = I >= 0,
 	I;
@@ -3698,3 +3702,33 @@ join_token_list([H|T]) -> join_token_list(T, [H]).
 
 join_token_list([], Acc) -> lists:reverse(Acc);
 join_token_list([H|T], Acc) -> join_token_list(T, [H,<<", ">>|Acc]).
+
+%% Parse an integer.
+digits(Bin) ->
+	digits(Bin, Bin, 0).
+
+digits(_, _, N) when N > ?MAX_DIGITS ->
+	error(function_clause);
+digits(<<C,R/bits>>, Bin0, N) when ?IS_DIGIT(C) ->
+	digits(R, Bin0, N + 1);
+digits(R, Bin0, N) ->
+	Digits = binary_part(Bin0, 0, N),
+	{binary_to_integer(Digits), R}.
+
+-ifdef(TEST).
+digits_test_() ->
+	Tests = [
+		{<<"123">>, {123, <<>>}},
+		{<<"123, 456">>, {123, <<", 456">>}},
+		{<<"99999999999999999">>, {99999999999999999, <<>>}}
+	],
+	[{V, fun() -> R = digits(V) end} || {V, R} <- Tests].
+
+digits_error_test_() ->
+	Tests = [
+		<<>>,
+		<<"hello">>,
+		<<"999999999999999999">>
+	],
+	[{V, fun() -> ?assertError(_, digits(V)) end} || V <- Tests].
+-endif.
