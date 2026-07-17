@@ -127,8 +127,11 @@
 	%% Timer for the ack for a SETTINGS frame we sent.
 	settings_timer = undefined :: undefined | reference(),
 
-	%% Settings are separate for each endpoint. In addition, settings
-	%% must be acknowledged before they can be expected to be applied.
+	%% Settings are separate for each endpoint. Settings with
+	%% a minimal default must be acknowledged before they can
+	%% be expected to be applied. Settings with a protocol
+	%% default of 'infinity' get a safer default enforced
+	%% immediately.
 	local_settings = #{
 %		header_table_size => 4096,
 %		enable_push => true,
@@ -581,9 +584,18 @@ headers_decode(Frame=#headers{head=head_fin, data=HeaderData},
 	end.
 
 headers_enforce_concurrency_limit(Frame=#headers{id=StreamID},
-		State=#http2_machine{local_settings=LocalSettings, streams=Streams},
+		State=#http2_machine{local_settings=LocalSettings,
+			next_settings=NextSettings, streams=Streams},
 		Type, Stream, Headers) ->
-	MaxConcurrentStreams = maps:get(max_concurrent_streams, LocalSettings, infinity),
+	%% We use the most up to date max_concurrent_streams
+	%% even if a settings ack was not yet received.
+	LocalMax = maps:get(max_concurrent_streams, LocalSettings, undefined),
+	NextMax = maps:get(max_concurrent_streams, NextSettings, undefined),
+	MaxConcurrentStreams = case {LocalMax, NextMax} of
+		{undefined, undefined} -> infinity;
+		{_, undefined} -> LocalMax;
+		_ -> NextMax
+	end,
 	%% Using < is correct because this new stream is not included
 	%% in the Streams variable yet and so we'll end up with +1 stream.
 	case map_size(Streams) < MaxConcurrentStreams of
