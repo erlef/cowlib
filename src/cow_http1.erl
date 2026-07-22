@@ -19,7 +19,6 @@
 -export([status_to_integer/1]).
 -export([parse_headers/1]).
 
--export([parse_fullpath/1]).
 -export([parse_version/1]).
 
 -export([request/4]).
@@ -276,37 +275,6 @@ horse_parse_headers() ->
 			"Content-Type: text/plain\r\n"
 			"\r\nRest">>)
 	).
--endif.
-
-%% @doc Extract path and query string from a binary,
-%% removing any fragment component.
-
--spec parse_fullpath(binary()) -> {binary(), binary()}.
-parse_fullpath(Fullpath) ->
-	parse_fullpath(Fullpath, <<>>).
-
-parse_fullpath(<<>>, Path) -> {Path, <<>>};
-parse_fullpath(<< $#, _/bits >>, Path) -> {Path, <<>>};
-parse_fullpath(<< $?, Qs/bits >>, Path) -> parse_fullpath_query(Qs, Path, <<>>);
-parse_fullpath(<< C, Rest/bits >>, SoFar) -> parse_fullpath(Rest, << SoFar/binary, C >>).
-
-parse_fullpath_query(<<>>, Path, Query) -> {Path, Query};
-parse_fullpath_query(<< $#, _/bits >>, Path, Query) -> {Path, Query};
-parse_fullpath_query(<< C, Rest/bits >>, Path, SoFar) ->
-	parse_fullpath_query(Rest, Path, << SoFar/binary, C >>).
-
--ifdef(TEST).
-parse_fullpath_test() ->
-	{<<"*">>, <<>>} = parse_fullpath(<<"*">>),
-	{<<"/">>, <<>>} = parse_fullpath(<<"/">>),
-	{<<"/path/to/resource">>, <<>>} = parse_fullpath(<<"/path/to/resource#fragment">>),
-	{<<"/path/to/resource">>, <<>>} = parse_fullpath(<<"/path/to/resource">>),
-	{<<"/">>, <<>>} = parse_fullpath(<<"/?">>),
-	{<<"/">>, <<"q=cowboy">>} = parse_fullpath(<<"/?q=cowboy#fragment">>),
-	{<<"/">>, <<"q=cowboy">>} = parse_fullpath(<<"/?q=cowboy">>),
-	{<<"/path/to/resource">>, <<"q=cowboy">>}
-		= parse_fullpath(<<"/path/to/resource?q=cowboy">>),
-	ok.
 -endif.
 
 %% @doc Convert an HTTP version to atom.

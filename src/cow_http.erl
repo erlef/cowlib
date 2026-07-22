@@ -26,7 +26,6 @@
 -export([parse_status_line/1]).
 -export([status_to_integer/1]).
 -export([parse_headers/1]).
--export([parse_fullpath/1]).
 -export([parse_version/1]).
 -export([request/4]).
 -export([response/3]).
@@ -39,6 +38,7 @@
 -export([merge_pseudo_headers/2]).
 -export([process_headers/5]).
 -export([remove_http1_headers/1]).
+-export([parse_fullpath/1]).
 
 %% Validation functions.
 
@@ -97,9 +97,6 @@ status_to_integer(Status) -> cow_http1:status_to_integer(Status).
 
 -spec parse_headers(binary()) -> {[{binary(), binary()}], binary()}.
 parse_headers(Data) -> cow_http1:parse_headers(Data).
-
--spec parse_fullpath(binary()) -> {binary(), binary()}.
-parse_fullpath(Fullpath) -> cow_http1:parse_fullpath(Fullpath).
 
 -spec parse_version(binary()) -> cow_http1:version().
 parse_version(Data) -> cow_http1:parse_version(Data).
@@ -228,7 +225,7 @@ request_pseudo_headers([{<<":authority">>, Authority}|Tail], PseudoHeaders) ->
 request_pseudo_headers([{<<":path">>, _}|_], #{path := _}) ->
 	{error, multiple_path_pseudo_headers};
 request_pseudo_headers([{<<":path">>, Path}|Tail], PseudoHeaders) ->
-	case validate_header(Path) of
+	case validate_path(Path) of
 		ok -> request_pseudo_headers(Tail, PseudoHeaders#{path => Path});
 		error -> {error, invalid_pseudo_header}
 	end;
@@ -326,6 +323,13 @@ validate_header(Value) ->
 		_ -> error
 	end.
 
+%% Reject CR, LF, NUL and # early.
+validate_path(Value) ->
+	case binary:match(Value, [<<$\r>>, <<$\n>>, <<$\0>>, <<$\#>>]) of
+		nomatch -> ok;
+		_ -> error
+	end.
+
 request_expected_size(Headers, IsFin, PseudoHeaders) ->
 	case [CL || {<<"content-length">>, CL} <- Headers] of
 		[] when IsFin =:= fin ->
@@ -410,6 +414,28 @@ remove_http1_headers(Headers) ->
 	lists:filter(fun({Name, _}) ->
 		not lists:member(Name, RemoveHeaders)
 	end, Headers).
+
+%% Extract path and query string from a binary.
+
+-spec parse_fullpath(binary()) -> {binary(), binary()}.
+
+parse_fullpath(Fullpath) ->
+	case binary:split(Fullpath, <<$?>>) of
+		[Path] -> {Path, <<>>};
+		[Path, Query] -> {Path, Query}
+	end.
+
+-ifdef(TEST).
+parse_fullpath_test() ->
+	{<<"*">>, <<>>} = parse_fullpath(<<"*">>),
+	{<<"/">>, <<>>} = parse_fullpath(<<"/">>),
+	{<<"/path/to/resource">>, <<>>} = parse_fullpath(<<"/path/to/resource">>),
+	{<<"/">>, <<>>} = parse_fullpath(<<"/?">>),
+	{<<"/">>, <<"q=cowboy">>} = parse_fullpath(<<"/?q=cowboy">>),
+	{<<"/path/to/resource">>, <<"q=cowboy">>}
+		= parse_fullpath(<<"/path/to/resource?q=cowboy">>),
+	ok.
+-endif.
 
 %% Validation functions.
 
