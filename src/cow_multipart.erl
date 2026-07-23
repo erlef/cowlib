@@ -214,6 +214,7 @@ parse_hd_name(<< C, Rest/bits >>, H, SoFar) ->
 		$: -> parse_hd_before_value(Rest, H, SoFar);
 		$\s -> parse_hd_name_ws(Rest, H, SoFar);
 		$\t -> parse_hd_name_ws(Rest, H, SoFar);
+		$\0 -> error(invalid_header_name);
 		_ -> ?LOWER(parse_hd_name, Rest, H, SoFar)
 	end.
 
@@ -240,6 +241,8 @@ parse_hd_value(<< $\r, Rest/bits >>, Headers, Name, SoFar) ->
 		<< $\n, Rest2/bits >> ->
 			parse_hd_name(Rest2, [{Name, SoFar}|Headers], <<>>)
 	end;
+parse_hd_value(<< $\0, _/bits >>, _, _, _) ->
+	error(invalid_header_value);
 parse_hd_value(<< C, Rest/bits >>, H, N, SoFar) ->
 	parse_hd_value(Rest, H, N, << SoFar/binary, C >>).
 
@@ -399,6 +402,29 @@ parse_partial_test() ->
 	{ok, <<"boundary">>, <<"\r\n--">>}
 		= parse_body(<<"boundary\r\n--">>, <<"boundary">>),
 	ok.
+
+parse_headers_reject_nul_test_() ->
+	Boundary = <<"deadbeef">>,
+	Tests = [
+		<<"--deadbeef\r\n", 0, "x-bad: value\r\n\r\nbody\r\n--deadbeef--">>,
+		<<"--deadbeef\r\nx-", 0, "bad: value\r\n\r\nbody\r\n--deadbeef--">>,
+		<<"--deadbeef\r\nx-bad", 0, ": value\r\n\r\nbody\r\n--deadbeef--">>,
+		<<"--deadbeef\r\nx-bad: ", 0, "value\r\n\r\nbody\r\n--deadbeef--">>,
+		<<"--deadbeef\r\nx-bad: val", 0, "ue\r\n\r\nbody\r\n--deadbeef--">>,
+		<<"--deadbeef\r\nx-bad: value", 0, "\r\n\r\nbody\r\n--deadbeef--">>,
+		<<"--deadbeef\r\n"
+			"content-disposition: form-data; name=\"a\"; "
+			"filename=\"fi", 0, "le.txt\"\r\n"
+			"\r\nbody\r\n--deadbeef--">>
+	],
+	[{iolist_to_binary(V), fun() ->
+		ok = try parse_headers(iolist_to_binary(V), Boundary) of
+			_ -> error(unexpected_success)
+		catch
+			error:invalid_header_name -> ok;
+			error:invalid_header_value -> ok
+		end
+	end} || V <- Tests].
 
 perf_parse_multipart(Stream, Boundary) ->
 	case parse_headers(Stream, Boundary) of
