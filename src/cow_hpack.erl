@@ -216,16 +216,23 @@ dec_lit_no_index(Rest, State, Acc, Opts, Name) ->
 
 dec_str(<<0:1, 2#1111111:7, Rest0/bits>>) ->
 	{Length, Rest1} = dec_big_int(Rest0, 127, 0),
-	<<Str:Length/binary, Rest/bits>> = Rest1,
-	{Str, Rest};
+	<<Str0:Length/binary, Rest/bits>> = Rest1,
+	{maybe_copy(Str0), Rest};
 dec_str(<<0:1, Length:7, Rest0/bits>>) ->
-	<<Str:Length/binary, Rest/bits>> = Rest0,
-	{Str, Rest};
+	<<Str0:Length/binary, Rest/bits>> = Rest0,
+	{maybe_copy(Str0), Rest};
 dec_str(<<1:1, 2#1111111:7, Rest0/bits>>) ->
 	{Length, Rest} = dec_big_int(Rest0, 127, 0),
 	dec_huffman(Rest, Length, 0, <<>>);
 dec_str(<<1:1, Length:7, Rest/bits>>) ->
 	dec_huffman(Rest, Length, 0, <<>>).
+
+%% Heap binaries (<=64 bytes) are already detached by the BEAM.
+%% Larger sub-binaries may retain the whole header block; copy those.
+maybe_copy(Bin) when byte_size(Bin) =< 64 ->
+	Bin;
+maybe_copy(Bin) ->
+	binary:copy(Bin).
 
 -ifdef(TEST).
 %% Test case extracted from h2spec.
@@ -259,6 +266,30 @@ decode_lit_index_dynamic_name_test() ->
 		{42,{<<"x-name-a">>, <<"v2">>}},
 		{42,{<<"x-name-b">>, <<"v1">>}},
 		{42,{<<"x-name-a">>, <<"v1">>}}]} = State,
+	ok.
+
+%% Raw (non-Huffman) literals larger than the heap-binary threshold
+%% (64 bytes) must not keep a reference to the header block binary.
+%% Smaller slices are copied by the BEAM automatically; this test
+%% uses >64-byte name/value so referenced_byte_size exposes retention.
+decode_raw_str_no_subbinary_retention_test() ->
+	Name = binary:copy(<<"n">>, 80),
+	Value = binary:copy(<<"v">>, 80),
+	%% Literal with incremental indexing, new name, raw encoding.
+	Enc0 = iolist_to_binary([
+		<<0:1, 1:1, 0:6>>,
+		enc_str(Name, no_huffman),
+		enc_str(Value, no_huffman)
+	]),
+	%% Make Enc a sub-binary of a much larger refc binary. Name/value
+	%% are >64 bytes so without binary:copy they keep referenced_byte_size
+	%% equal to the large parent. (Heap binaries <=64 are always copied.)
+	Large = <<Enc0/binary, (binary:copy(<<"Z">>, 50000))/binary>>,
+	<<Enc:(byte_size(Enc0))/binary, _/binary>> = Large,
+	true = binary:referenced_byte_size(Enc) > byte_size(Enc),
+	{[{Name, Value}], #state{dyn_table=[{_, {N, V}}]}} = decode(Enc),
+	true = byte_size(N) =:= binary:referenced_byte_size(N),
+	true = byte_size(V) =:= binary:referenced_byte_size(V),
 	ok.
 
 req_decode_test() ->
