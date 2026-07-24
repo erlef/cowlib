@@ -361,7 +361,10 @@ setcookie(Name, Value, Opts) ->
 	[Name, <<"=">>, Value, attributes(maps:to_list(Opts))].
 
 attributes([]) -> [];
-attributes([{domain, Domain}|Tail]) -> [<<"; Domain=">>, Domain|attributes(Tail)];
+attributes([{domain, Domain0}|Tail]) ->
+	Domain = iolist_to_binary(Domain0),
+	nomatch = binary:match(Domain, <<$;>>),
+	[<<"; Domain=">>, Domain|attributes(Tail)];
 attributes([{http_only, false}|Tail]) -> attributes(Tail);
 attributes([{http_only, true}|Tail]) -> [<<"; HttpOnly">>|attributes(Tail)];
 %% MSIE requires an Expires date in the past to delete a cookie.
@@ -373,7 +376,10 @@ attributes([{max_age, MaxAge}|Tail]) when is_integer(MaxAge), MaxAge > 0 ->
 	[<<"; Expires=">>, Expires, <<"; Max-Age=">>, integer_to_list(MaxAge)|attributes(Tail)];
 attributes([Opt={max_age, _}|_]) ->
 	error({badarg, Opt});
-attributes([{path, Path}|Tail]) -> [<<"; Path=">>, Path|attributes(Tail)];
+attributes([{path, Path0}|Tail]) ->
+	Path = iolist_to_binary(Path0),
+	nomatch = binary:match(Path, <<$;>>),
+	[<<"; Path=">>, Path|attributes(Tail)];
 attributes([{secure, false}|Tail]) -> attributes(Tail);
 attributes([{secure, true}|Tail]) -> [<<"; Secure">>|attributes(Tail)];
 attributes([{same_site, default}|Tail]) -> attributes(Tail);
@@ -456,4 +462,22 @@ setcookie_failures_test_() ->
 	[{iolist_to_binary(io_lib:format("{~p, ~p} failure", [N, V])),
 		fun() -> true = F(N, V) end}
 		|| {N, V} <- Tests].
+
+setcookie_attr_failures_test_() ->
+	F = fun(Opts) ->
+		try setcookie(<<"Name">>, <<"Value">>, Opts) of
+			_ ->
+				false
+		catch _:_ ->
+			true
+		end
+	end,
+	Tests = [
+		#{path => <<"/a; Secure">>},
+		#{domain => <<"ex.com; Path=/">>},
+		#{path => [<<"/a">>, <<";HttpOnly">>]}
+	],
+	[{iolist_to_binary(io_lib:format("~p failure", [O])),
+		fun() -> true = F(O) end}
+		|| O <- Tests].
 -endif.
