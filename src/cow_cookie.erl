@@ -15,6 +15,7 @@
 -module(cow_cookie).
 
 -export([parse_cookie/1]).
+-export([parse_cookie/2]).
 -export([parse_set_cookie/1]).
 -export([cookie/1]).
 -export([setcookie/3]).
@@ -40,6 +41,9 @@
 }.
 -export_type([cookie_opts/0]).
 
+-type parse_opts() :: #{max_cookies => non_neg_integer()}.
+-export_type([parse_opts/0]).
+
 -include("cow_inline.hrl").
 
 -ifdef(TEST).
@@ -50,60 +54,67 @@
 
 -spec parse_cookie(binary()) -> [{binary(), binary()}].
 parse_cookie(Cookie) ->
-	parse_cookie(Cookie, []).
+	parse_cookie(Cookie, #{}).
 
-parse_cookie(<<>>, Acc) ->
+-spec parse_cookie(binary(), parse_opts()) -> [{binary(), binary()}].
+parse_cookie(Cookie, Opts) ->
+	Max = maps:get(max_cookies, Opts, 100),
+	parse_cookie(Cookie, [], Max).
+
+parse_cookie(<<>>, Acc, _) ->
 	lists:reverse(Acc);
-parse_cookie(<< $\s, Rest/binary >>, Acc) ->
-	parse_cookie(Rest, Acc);
-parse_cookie(<< $\t, Rest/binary >>, Acc) ->
-	parse_cookie(Rest, Acc);
-parse_cookie(<< $,, Rest/binary >>, Acc) ->
-	parse_cookie(Rest, Acc);
-parse_cookie(<< $;, Rest/binary >>, Acc) ->
-	parse_cookie(Rest, Acc);
-parse_cookie(Cookie, Acc) ->
-	parse_cookie_name(Cookie, Acc, <<>>).
+parse_cookie(<< $\s, Rest/binary >>, Acc, Max) ->
+	parse_cookie(Rest, Acc, Max);
+parse_cookie(<< $\t, Rest/binary >>, Acc, Max) ->
+	parse_cookie(Rest, Acc, Max);
+parse_cookie(<< $,, Rest/binary >>, Acc, Max) ->
+	parse_cookie(Rest, Acc, Max);
+parse_cookie(<< $;, Rest/binary >>, Acc, Max) ->
+	parse_cookie(Rest, Acc, Max);
+parse_cookie(_, Acc, Max) when length(Acc) =:= Max ->
+	error(limit_reached);
+parse_cookie(Cookie, Acc, Max) ->
+	parse_cookie_name(Cookie, Acc, <<>>, Max).
 
-parse_cookie_name(<<>>, Acc, Name) ->
+parse_cookie_name(<<>>, Acc, Name, _) ->
 	lists:reverse([{<<>>, parse_cookie_trim(Name)}|Acc]);
-parse_cookie_name(<< $=, _/binary >>, _, <<>>) ->
+parse_cookie_name(<< $=, _/binary >>, _, <<>>, _) ->
 	error(badarg);
-parse_cookie_name(<< $=, Rest/binary >>, Acc, Name) ->
-	parse_cookie_value(Rest, Acc, Name, <<>>);
-parse_cookie_name(<< $,, _/binary >>, _, _) ->
+parse_cookie_name(<< $=, Rest/binary >>, Acc, Name, Max) ->
+	parse_cookie_value(Rest, Acc, Name, <<>>, Max);
+parse_cookie_name(<< $,, _/binary >>, _, _, _) ->
 	error(badarg);
-parse_cookie_name(<< $;, Rest/binary >>, Acc, Name) ->
-	parse_cookie(Rest, [{<<>>, parse_cookie_trim(Name)}|Acc]);
-parse_cookie_name(<< $\t, _/binary >>, _, _) ->
+parse_cookie_name(<< $;, Rest/binary >>, Acc, Name, Max) ->
+	parse_cookie(Rest, [{<<>>, parse_cookie_trim(Name)}|Acc], Max);
+parse_cookie_name(<< $\t, _/binary >>, _, _, _) ->
 	error(badarg);
-parse_cookie_name(<< $\r, _/binary >>, _, _) ->
+parse_cookie_name(<< $\r, _/binary >>, _, _, _) ->
 	error(badarg);
-parse_cookie_name(<< $\n, _/binary >>, _, _) ->
+parse_cookie_name(<< $\n, _/binary >>, _, _, _) ->
 	error(badarg);
-parse_cookie_name(<< $\013, _/binary >>, _, _) ->
+parse_cookie_name(<< $\013, _/binary >>, _, _, _) ->
 	error(badarg);
-parse_cookie_name(<< $\014, _/binary >>, _, _) ->
+parse_cookie_name(<< $\014, _/binary >>, _, _, _) ->
 	error(badarg);
-parse_cookie_name(<< C, Rest/binary >>, Acc, Name) ->
-	parse_cookie_name(Rest, Acc, << Name/binary, C >>).
+parse_cookie_name(<< C, Rest/binary >>, Acc, Name, Max) ->
+	parse_cookie_name(Rest, Acc, << Name/binary, C >>, Max).
 
-parse_cookie_value(<<>>, Acc, Name, Value) ->
+parse_cookie_value(<<>>, Acc, Name, Value, _) ->
 	lists:reverse([{Name, parse_cookie_trim(Value)}|Acc]);
-parse_cookie_value(<< $;, Rest/binary >>, Acc, Name, Value) ->
-	parse_cookie(Rest, [{Name, parse_cookie_trim(Value)}|Acc]);
-parse_cookie_value(<< $\t, _/binary >>, _, _, _) ->
+parse_cookie_value(<< $;, Rest/binary >>, Acc, Name, Value, Max) ->
+	parse_cookie(Rest, [{Name, parse_cookie_trim(Value)}|Acc], Max);
+parse_cookie_value(<< $\t, _/binary >>, _, _, _, _) ->
 	error(badarg);
-parse_cookie_value(<< $\r, _/binary >>, _, _, _) ->
+parse_cookie_value(<< $\r, _/binary >>, _, _, _, _) ->
 	error(badarg);
-parse_cookie_value(<< $\n, _/binary >>, _, _, _) ->
+parse_cookie_value(<< $\n, _/binary >>, _, _, _, _) ->
 	error(badarg);
-parse_cookie_value(<< $\013, _/binary >>, _, _, _) ->
+parse_cookie_value(<< $\013, _/binary >>, _, _, _, _) ->
 	error(badarg);
-parse_cookie_value(<< $\014, _/binary >>, _, _, _) ->
+parse_cookie_value(<< $\014, _/binary >>, _, _, _, _) ->
 	error(badarg);
-parse_cookie_value(<< C, Rest/binary >>, Acc, Name, Value) ->
-	parse_cookie_value(Rest, Acc, Name, << Value/binary, C >>).
+parse_cookie_value(<< C, Rest/binary >>, Acc, Name, Value, Max) ->
+	parse_cookie_value(Rest, Acc, Name, << Value/binary, C >>, Max).
 
 parse_cookie_trim(Value = <<>>) ->
 	Value;
@@ -169,6 +180,22 @@ parse_cookie_error_test_() ->
 		<<"=">>
 	],
 	[{V, fun() -> ?assertError(badarg, parse_cookie(V)) end} || V <- Tests].
+
+parse_cookie_max_cookies_test() ->
+	Pair = <<"a=b">>,
+	%% 100 pairs accepted by default.
+	OK = iolist_to_binary(lists:join(<<"; ">>, lists:duplicate(100, Pair))),
+	Cookies = parse_cookie(OK),
+	100 = length(Cookies),
+	%% 101st pair is rejected.
+	Over = iolist_to_binary([OK, <<"; ">>, Pair]),
+	?assertError(limit_reached, parse_cookie(Over)),
+	%% Custom limit: at most N pairs; exceeding errors (no truncation).
+	[{<<"a">>, <<"b">>}] = parse_cookie(Pair, #{max_cookies => 1}),
+	Two = <<Pair/binary, "; ", Pair/binary>>,
+	?assertError(limit_reached, parse_cookie(Two, #{max_cookies => 1})),
+	?assertError(limit_reached, parse_cookie(Pair, #{max_cookies => 0})),
+	ok.
 -endif.
 
 %% Set-Cookie header.
