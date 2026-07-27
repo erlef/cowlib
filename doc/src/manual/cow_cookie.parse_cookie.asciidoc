@@ -9,7 +9,11 @@ cow_cookie:parse_cookie - Parse a cookie header
 [source,erlang]
 ----
 parse_cookie(Cookie :: binary())
+    -> parse_cookie(Cookie, #{})
+parse_cookie(Cookie :: binary(), Opts)
     -> [{binary(), binary()}]
+
+Opts :: #{max_cookies => non_neg_integer()}
 ----
 
 Parse a cookie header.
@@ -28,6 +32,8 @@ An exception is thrown in the event of a parse error.
 
 == Changelog
 
+* *2.19*: Function `parse_cookie/2` introduced with a
+          `max_cookies` option.
 * *2.9*: Fixes to the parser may lead to potential incompatibilities.
          A cookie name starting with `$` is no longer ignored.
          A cookie without a `=` will be parsed as the value of
