@@ -293,6 +293,9 @@ parse(<< Len:24, 8:8, _/bits >>) when Len =/= 4->
 %%
 parse(<< _:24, 9:8, _:9, 0:31, _/bits >>) ->
 	{connection_error, protocol_error, 'CONTINUATION frames MUST be associated with a stream. (RFC7540 6.10)'};
+parse(<< 0:24, 9:8, _:5, 0:1, _/bits >>) ->
+	{connection_error, enhance_your_calm,
+		'CONTINUATION frames MUST have a non-zero length unless the END_HEADERS flag is set. (RFC9113 10.5)'};
 parse(<< Len:24, 9:8, _:5, FlagEndHeaders:1, _:3, StreamID:31, HeaderBlockFragment:Len/binary, Rest/bits >>) ->
 	{ok, {continuation, StreamID, parse_head_fin(FlagEndHeaders), HeaderBlockFragment}, Rest};
 %%
