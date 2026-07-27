@@ -93,11 +93,23 @@ parse_expr(R) ->
 
 parse_var_list(<<C,R/bits>>, Op, List)
 		when ?IS_ALPHANUM(C) or (C =:= $_) ->
-	parse_varname(R, Op, List, <<C>>).
+	parse_varname(R, Op, List, <<C>>);
+parse_var_list(<<$%,H,L,R/bits>>, Op, List)
+		when ?IS_HEX(H), ?IS_HEX(L) ->
+	parse_varname(R, Op, List, <<$%,H,L>>).
 
 parse_varname(<<C,R/bits>>, Op, List, Name)
-		when ?IS_ALPHANUM(C) or (C =:= $_) or (C =:= $.) or (C =:= $%) ->
+		when ?IS_ALPHANUM(C) or (C =:= $_) ->
 	parse_varname(R, Op, List, <<Name/binary,C>>);
+parse_varname(<<$%,H,L,R/bits>>, Op, List, Name)
+		when ?IS_HEX(H), ?IS_HEX(L) ->
+	parse_varname(R, Op, List, <<Name/binary,$%,H,L>>);
+parse_varname(<<$.,C,R/bits>>, Op, List, Name)
+		when ?IS_ALPHANUM(C) or (C =:= $_) ->
+	parse_varname(R, Op, List, <<Name/binary,$.,C>>);
+parse_varname(<<$.,$%,H,L,R/bits>>, Op, List, Name)
+		when ?IS_HEX(H), ?IS_HEX(L) ->
+	parse_varname(R, Op, List, <<Name/binary,$.,$%,H,L>>);
 parse_varname(<<$:,C,R/bits>>, Op, List, Name)
 		when (C =:= $1) or (C =:= $2) or (C =:= $3) or (C =:= $4) or (C =:= $5)
 			or (C =:= $6) or (C =:= $7) or (C =:= $8) or (C =:= $9) ->
@@ -130,7 +142,7 @@ expand(URITemplate, Vars) ->
 expand1([], _) ->
 	[];
 expand1([Literal|Tail], Vars) when is_binary(Literal) ->
-	[Literal|expand1(Tail, Vars)];
+	[urlencode(Literal, reserved)|expand1(Tail, Vars)];
 expand1([{expr, simple_string_expansion, VarList}|Tail], Vars) ->
 	[simple_string_expansion(VarList, Vars)|expand1(Tail, Vars)];
 expand1([{expr, reserved_expansion, VarList}|Tail], Vars) ->
