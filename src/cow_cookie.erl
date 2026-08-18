@@ -492,8 +492,15 @@ attributes([{max_age, MaxAge}|Tail]) when is_integer(MaxAge), MaxAge >= 0 ->
 	[<<"; Max-Age=">>, integer_to_list(MaxAge)|attributes(Tail)];
 attributes([Opt={max_age, _}|_]) ->
 	error({badarg, Opt});
-attributes([{path, Path}|Tail]) ->
-	[<<"; Path=">>, ensure_attr_value(Path)|attributes(Tail)];
+%% A path-value that does not start with "/" is ignored by user
+%% agents, which then fall back to the default-path. (RFC6265 5.2.4)
+attributes([{path, Path0}|Tail]) ->
+	case ensure_attr_value(Path0) of
+		Path = <<$/,_/bits>> ->
+			[<<"; Path=">>, Path|attributes(Tail)];
+		_ ->
+			error({badarg, {path, Path0}})
+	end;
 attributes([{secure, false}|Tail]) -> attributes(Tail);
 attributes([{secure, true}|Tail]) -> [<<"; Secure">>|attributes(Tail)];
 attributes([{same_site, default}|Tail]) -> attributes(Tail);
@@ -615,8 +622,33 @@ setcookie_attr_failures_test_() ->
 		fun() -> true = F(O) end}
 		|| O <- Tests].
 
+%% A path-value that does not start with "/" is silently ignored
+%% by user agents, which fall back to the default-path instead.
+%% (RFC6265 5.2.4)
+setcookie_attr_path_test_() ->
+	F = fun(Opts) ->
+		try setcookie(<<"Name">>, <<"Value">>, Opts) of
+			_ ->
+				false
+		catch _:_ ->
+			true
+		end
+	end,
+	Tests = [
+		#{path => <<>>},
+		#{path => <<"relative">>},
+		#{path => <<"a/b">>},
+		#{path => [<<"relative">>, <<"/still-relative">>]}
+	],
+	[{iolist_to_binary(io_lib:format("~p failure", [O])),
+		fun() -> true = F(O) end}
+		|| O <- Tests].
+
 setcookie_attr_test_() ->
 	Tests = [
+		%% A path-value may be given as an iolist, as long as it
+		%% starts with "/" once flattened.
+		{#{path => [<<"/a">>, <<"/b">>]}, <<"Name=Value; Path=/a/b">>},
 		%% Spaces and other separators are allowed in path-value.
 		{#{path => <<"/a b">>}, <<"Name=Value; Path=/a b">>},
 		{#{path => <<"/a,b">>}, <<"Name=Value; Path=/a,b">>},
@@ -625,10 +657,10 @@ setcookie_attr_test_() ->
 		%% A leading dot is ignored by user agents.
 		{#{domain => <<".example.org">>}, <<"Name=Value; Domain=.example.org">>},
 		%% path-value boundaries.
-		{#{path => <<16#20>>}, <<"Name=Value; Path=", 16#20>>},
-		{#{path => <<16#3a>>}, <<"Name=Value; Path=", 16#3a>>},
-		{#{path => <<16#3c>>}, <<"Name=Value; Path=", 16#3c>>},
-		{#{path => <<16#7e>>}, <<"Name=Value; Path=", 16#7e>>}
+		{#{path => <<$/, 16#20>>}, <<"Name=Value; Path=/", 16#20>>},
+		{#{path => <<$/, 16#3a>>}, <<"Name=Value; Path=/", 16#3a>>},
+		{#{path => <<$/, 16#3c>>}, <<"Name=Value; Path=/", 16#3c>>},
+		{#{path => <<$/, 16#7e>>}, <<"Name=Value; Path=/", 16#7e>>}
 	],
 	[{Res, fun() -> Res = iolist_to_binary(setcookie(<<"Name">>, <<"Value">>, O)) end}
 		|| {O, Res} <- Tests].
