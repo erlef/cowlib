@@ -356,13 +356,13 @@ parse_set_cookie_test_() ->
 cookie([]) ->
 	[];
 cookie([{<<>>, Value}]) ->
-	[Value];
+	[ensure_cookie_value(Value)];
 cookie([{Name, Value}]) ->
-	[Name, $=, Value];
+	[ensure_cookie_name(Name), $=, ensure_cookie_value(Value)];
 cookie([{<<>>, Value}|Tail]) ->
-	[Value, $;, $\s|cookie(Tail)];
+	[ensure_cookie_value(Value), $;, $\s|cookie(Tail)];
 cookie([{Name, Value}|Tail]) ->
-	[Name, $=, Value, $;, $\s|cookie(Tail)].
+	[ensure_cookie_name(Name), $=, ensure_cookie_value(Value), $;, $\s|cookie(Tail)].
 
 -ifdef(TEST).
 cookie_test_() ->
@@ -371,10 +371,65 @@ cookie_test_() ->
 		{[{<<"a">>, <<"b">>}], <<"a=b">>},
 		{[{<<"a">>, <<"b">>}, {<<"c">>, <<"d">>}], <<"a=b; c=d">>},
 		{[{<<>>, <<"b">>}, {<<"c">>, <<"d">>}], <<"b; c=d">>},
-		{[{<<"a">>, <<"b">>}, {<<>>, <<"d">>}], <<"a=b; d">>}
+		{[{<<"a">>, <<"b">>}, {<<>>, <<"d">>}], <<"a=b; d">>},
+		%% Empty values are allowed.
+		{[{<<"a">>, <<>>}], <<"a=">>},
+		%% Values may be enclosed in double quotes.
+		{[{<<"a">>, <<"\"b\"">>}], <<"a=\"b\"">>},
+		{[{<<"a">>, <<"\"\"">>}], <<"a=\"\"">>},
+		%% cookie-octet boundaries.
+		{[{<<"a">>, <<16#21>>}], <<"a=", 16#21>>},
+		{[{<<"a">>, <<16#23, 16#2b>>}], <<"a=", 16#23, 16#2b>>},
+		{[{<<"a">>, <<16#2d, 16#3a>>}], <<"a=", 16#2d, 16#3a>>},
+		{[{<<"a">>, <<16#3c, 16#5b>>}], <<"a=", 16#3c, 16#5b>>},
+		{[{<<"a">>, <<16#5d, 16#7e>>}], <<"a=", 16#5d, 16#7e>>}
 	],
 	[{Res, fun() -> Res = iolist_to_binary(cookie(Cookies)) end}
 		|| {Cookies, Res} <- Tests].
+
+cookie_error_test_() ->
+	Tests = [
+		%% Excluded by cookie-octet: SP " , ; \ and DEL.
+		[{<<"a">>, <<"b c">>}],
+		[{<<"a">>, <<"b\"c">>}],
+		[{<<"a">>, <<"b,c">>}],
+		[{<<"a">>, <<"b;c">>}],
+		[{<<"a">>, <<"b\\c">>}],
+		[{<<"a">>, <<"b", 16#7f, "c">>}],
+		%% Control characters.
+		[{<<"a">>, <<"b", 0, "c">>}],
+		[{<<"a">>, <<"b\tc">>}],
+		[{<<"a">>, <<"b\rc">>}],
+		[{<<"a">>, <<"b\nc">>}],
+		[{<<"a">>, <<"b\013c">>}],
+		[{<<"a">>, <<"b\014c">>}],
+		[{<<"a">>, <<"b", 16#1b, "c">>}],
+		%% Non-ASCII.
+		[{<<"a">>, <<"b", 16#80, "c">>}],
+		%% cookie-octet boundaries.
+		[{<<"a">>, <<16#20>>}],
+		[{<<"a">>, <<16#22>>}],
+		[{<<"a">>, <<16#2c>>}],
+		[{<<"a">>, <<16#3b>>}],
+		[{<<"a">>, <<16#5c>>}],
+		%% A quote must be closed to be a quoted value.
+		[{<<"a">>, <<"\"b">>}],
+		[{<<"a">>, <<"b\"">>}],
+		[{<<"a">>, <<"\"">>}],
+		%% Names must be tokens.
+		[{<<"a b">>, <<"c">>}],
+		[{<<"a=b">>, <<"c">>}],
+		[{<<"a;b">>, <<"c">>}],
+		[{<<"a,b">>, <<"c">>}],
+		[{<<"a\"b">>, <<"c">>}],
+		[{<<"a\rb">>, <<"c">>}],
+		[{<<"a", 0, "b">>, <<"c">>}],
+		%% Checks apply to every cookie in the list.
+		[{<<"a">>, <<"b">>}, {<<"c">>, <<"d e">>}],
+		[{<<>>, <<"a b">>}]
+	],
+	[{iolist_to_binary(io_lib:format("~p failure", [V])),
+		fun() -> ?assertError(_, iolist_to_binary(cookie(V))) end} || V <- Tests].
 -endif.
 
 %% Convert a cookie name, value and options to its iodata form.
@@ -515,3 +570,32 @@ setcookie_attr_failures_test_() ->
 		fun() -> true = F(O) end}
 		|| O <- Tests].
 -endif.
+
+%% Validation functions.
+
+%% cookie-name = token (RFC6265 4.1.1)
+ensure_cookie_name(Name0) ->
+	Name = iolist_to_binary(Name0),
+	ok = validate_cookie_name(Name),
+	Name.
+
+validate_cookie_name(<<>>) -> ok;
+validate_cookie_name(<<C,R/bits>>) when ?IS_TOKEN(C) -> validate_cookie_name(R).
+
+%% cookie-value = *cookie-octet / ( DQUOTE *cookie-octet DQUOTE ) (RFC6265 4.1.1)
+ensure_cookie_value(Value0) ->
+	Value = iolist_to_binary(Value0),
+	ok = validate_cookie_value(Value),
+	Value.
+
+validate_cookie_value(<<$",R/bits>>) when R =/= <<>> ->
+	Size = byte_size(R) - 1,
+	case R of
+		<<V:Size/binary,$">> -> validate_cookie_octets(V);
+		_ -> validate_cookie_octets(<<$",R/bits>>)
+	end;
+validate_cookie_value(Value) ->
+	validate_cookie_octets(Value).
+
+validate_cookie_octets(<<>>) -> ok;
+validate_cookie_octets(<<C,R/bits>>) when ?IS_COOKIE_OCTET(C) -> validate_cookie_octets(R).

@@ -33,6 +33,13 @@
 -define(IS_ALPHANUM(C), ?IS_ALPHA(C) or ?IS_DIGIT(C)).
 -define(IS_CHAR(C), C > 0, C < 128).
 
+-define(IS_COOKIE_OCTET(C),
+	(C =:= 16#21) or
+	((C >= 16#23) and (C =< 16#2b)) or
+	((C >= 16#2d) and (C =< 16#3a)) or
+	((C >= 16#3c) and (C =< 16#5b)) or
+	((C >= 16#5d) and (C =< 16#7e))).
+
 -define(IS_DIGIT(C),
 	(C =:= $0) or (C =:= $1) or (C =:= $2) or (C =:= $3) or (C =:= $4) or
 	(C =:= $5) or (C =:= $6) or (C =:= $7) or (C =:= $8) or (C =:= $9)).
