@@ -210,11 +210,16 @@ parse_set_cookie(SetCookie) ->
 			ignore;
 		false ->
 			{NameValuePair, UnparsedAttrs} = take_until_semicolon(SetCookie, <<>>),
+			%% A name-value-pair without '=' is a nameless cookie: the
+			%% empty string is the name and the whole pair is the value.
+			%% (RFC6265bis 5.5, step 3)
 			{Name, Value} = case binary:split(NameValuePair, <<$=>>) of
 				[Value0] -> {<<>>, trim(Value0)};
 				[Name0, Value0] -> {trim(Name0), trim(Value0)}
 			end,
 			case {Name, Value} of
+				%% Both name and value empty: ignore the
+				%% set-cookie-string entirely. (RFC6265bis 5.6, step 2)
 				{<<>>, <<>>} ->
 					ignore;
 				_ ->
@@ -345,6 +350,34 @@ parse_set_cookie_test_() ->
 			{ok, <<"a">>, <<"b">>, #{max_age => {{0,1,1},{0,0,0}}}}},
 		{<<"a=b; Max-Age=+0">>, {ok, <<"a">>, <<"b">>, #{}}},
 		{<<"a=b; Max-Age=+123">>, {ok, <<"a">>, <<"b">>, #{}}}
+	],
+	[{SetCookie, fun() -> Res = parse_set_cookie(SetCookie) end}
+		|| {SetCookie, Res} <- Tests].
+
+%% Only a set-cookie-string with both an empty name and an empty
+%% value is ignored entirely. (RFC6265bis 5.6, step 2)
+parse_set_cookie_ignore_test_() ->
+	Tests = [
+		<<>>,
+		<<"=">>,
+		<<" = ">>,
+		<<"=; Secure">>
+	],
+	[{SetCookie, fun() -> ignore = parse_set_cookie(SetCookie) end}
+		|| SetCookie <- Tests].
+
+%% A name-value-pair without '=', or with an empty name, is a
+%% nameless cookie: the empty string is the name. (RFC6265bis 5.5,
+%% step 3; RFC6265bis 5.6, step 2 only rejects when both are empty.)
+parse_set_cookie_nameless_test_() ->
+	Tests = [
+		{<<"b">>, {ok, <<>>, <<"b">>, #{}}},
+		{<<"b; Secure">>, {ok, <<>>, <<"b">>, #{secure => true}}},
+		{<<"=b">>, {ok, <<>>, <<"b">>, #{}}},
+		{<<"=b; Secure">>, {ok, <<>>, <<"b">>, #{secure => true}}},
+		{<<" =b">>, {ok, <<>>, <<"b">>, #{}}},
+		%% Only the first '=' separates name from value.
+		{<<"=test=2">>, {ok, <<>>, <<"test=2">>, #{}}}
 	],
 	[{SetCookie, fun() -> Res = parse_set_cookie(SetCookie) end}
 		|| {SetCookie, Res} <- Tests].
