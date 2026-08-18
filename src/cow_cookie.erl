@@ -443,32 +443,24 @@ cookie_error_test_() ->
 
 -spec setcookie(iodata(), iodata(), cookie_opts()) -> iolist().
 setcookie(Name, Value, Opts) ->
-	nomatch = binary:match(iolist_to_binary(Name), [<<$=>>, <<$,>>, <<$;>>,
-			<<$\s>>, <<$\t>>, <<$\r>>, <<$\n>>, <<$\013>>, <<$\014>>]),
-	nomatch = binary:match(iolist_to_binary(Value), [<<$,>>, <<$;>>,
-			<<$\s>>, <<$\t>>, <<$\r>>, <<$\n>>, <<$\013>>, <<$\014>>]),
-	[Name, <<"=">>, Value, attributes(maps:to_list(Opts))].
+	[ensure_cookie_name(Name), <<"=">>, ensure_cookie_value(Value),
+		attributes(maps:to_list(Opts))].
 
 attributes([]) -> [];
-attributes([{domain, Domain0}|Tail]) ->
-	Domain = iolist_to_binary(Domain0),
-	nomatch = binary:match(Domain, <<$;>>),
-	[<<"; Domain=">>, Domain|attributes(Tail)];
+%% The domain is a subdomain as defined in RFC1034 3.5 and RFC1123 2.1,
+%% optionally preceded by a dot. We only check for the characters that
+%% would allow escaping the attribute, as user agents ignore the dot
+%% and lowercase the domain before using it. (RFC6265 5.2.3)
+attributes([{domain, Domain}|Tail]) ->
+	[<<"; Domain=">>, ensure_attr_value(Domain)|attributes(Tail)];
 attributes([{http_only, false}|Tail]) -> attributes(Tail);
 attributes([{http_only, true}|Tail]) -> [<<"; HttpOnly">>|attributes(Tail)];
-%% MSIE requires an Expires date in the past to delete a cookie.
-attributes([{max_age, 0}|Tail]) ->
-	[<<"; Expires=Thu, 01-Jan-1970 00:00:01 GMT; Max-Age=0">>|attributes(Tail)];
-attributes([{max_age, MaxAge}|Tail]) when is_integer(MaxAge), MaxAge > 0 ->
-	Secs = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
-	Expires = cow_date:rfc2109(calendar:gregorian_seconds_to_datetime(Secs + MaxAge)),
-	[<<"; Expires=">>, Expires, <<"; Max-Age=">>, integer_to_list(MaxAge)|attributes(Tail)];
+attributes([{max_age, MaxAge}|Tail]) when is_integer(MaxAge), MaxAge >= 0 ->
+	[<<"; Max-Age=">>, integer_to_list(MaxAge)|attributes(Tail)];
 attributes([Opt={max_age, _}|_]) ->
 	error({badarg, Opt});
-attributes([{path, Path0}|Tail]) ->
-	Path = iolist_to_binary(Path0),
-	nomatch = binary:match(Path, <<$;>>),
-	[<<"; Path=">>, Path|attributes(Tail)];
+attributes([{path, Path}|Tail]) ->
+	[<<"; Path=">>, ensure_attr_value(Path)|attributes(Tail)];
 attributes([{secure, false}|Tail]) -> attributes(Tail);
 attributes([{secure, true}|Tail]) -> [<<"; Secure">>|attributes(Tail)];
 attributes([{same_site, default}|Tail]) -> attributes(Tail);
@@ -514,20 +506,23 @@ setcookie_test_() ->
 	[{R, fun() -> R = iolist_to_binary(setcookie(N, V, O)) end}
 		|| {N, V, O, R} <- Tests].
 
+%% Max-Age is universally supported by current user agents, so
+%% we do not also send an Expires attribute. (RFC6265 4.1.2.2)
 setcookie_max_age_test() ->
 	F = fun(N, V, O) ->
 		binary:split(iolist_to_binary(
 			setcookie(N, V, O)), <<";">>, [global])
 	end,
 	[<<"Customer=WILE_E_COYOTE">>,
-		<<" Expires=", _/binary>>,
+		<<" Max-Age=0">>] = F(<<"Customer">>, <<"WILE_E_COYOTE">>,
+			#{max_age => 0}),
+	[<<"Customer=WILE_E_COYOTE">>,
 		<<" Max-Age=111">>,
 		<<" Secure">>] = F(<<"Customer">>, <<"WILE_E_COYOTE">>,
 			#{max_age => 111, secure => true}),
 	?assertError({badarg, {max_age, -111}},
 		F(<<"Customer">>, <<"WILE_E_COYOTE">>, #{max_age => -111})),
 	[<<"Customer=WILE_E_COYOTE">>,
-		<<" Expires=", _/binary>>,
 		<<" Max-Age=86417">>] = F(<<"Customer">>, <<"WILE_E_COYOTE">>,
 			 #{max_age => 86417}),
 	ok.
@@ -564,11 +559,46 @@ setcookie_attr_failures_test_() ->
 	Tests = [
 		#{path => <<"/a; Secure">>},
 		#{domain => <<"ex.com; Path=/">>},
-		#{path => [<<"/a">>, <<";HttpOnly">>]}
+		#{path => [<<"/a">>, <<";HttpOnly">>]},
+		%% Control characters.
+		#{path => <<"/a\r\nSet-Cookie: b=c">>},
+		#{path => <<"/a\nb">>},
+		#{path => <<"/a\tb">>},
+		#{path => <<"/a", 0, "b">>},
+		#{path => <<"/a\013b">>},
+		#{path => <<"/a\014b">>},
+		#{path => <<"/a", 16#7f, "b">>},
+		#{domain => <<"ex.com\r\nSet-Cookie: b=c">>},
+		#{domain => <<"ex.com\nb">>},
+		#{domain => <<"ex.com", 0, "b">>},
+		%% Non-ASCII. Domains must be punycode encoded.
+		#{path => <<"/a", 16#80, "b">>},
+		#{domain => <<"ex", 16#c3, 16#a9, ".com">>},
+		%% path-value boundaries.
+		#{path => <<16#1f>>},
+		#{path => <<16#3b>>}
 	],
 	[{iolist_to_binary(io_lib:format("~p failure", [O])),
 		fun() -> true = F(O) end}
 		|| O <- Tests].
+
+setcookie_attr_test_() ->
+	Tests = [
+		%% Spaces and other separators are allowed in path-value.
+		{#{path => <<"/a b">>}, <<"Name=Value; Path=/a b">>},
+		{#{path => <<"/a,b">>}, <<"Name=Value; Path=/a,b">>},
+		{#{path => <<"/a=b">>}, <<"Name=Value; Path=/a=b">>},
+		{#{path => <<"/a\"b">>}, <<"Name=Value; Path=/a\"b">>},
+		%% A leading dot is ignored by user agents.
+		{#{domain => <<".example.org">>}, <<"Name=Value; Domain=.example.org">>},
+		%% path-value boundaries.
+		{#{path => <<16#20>>}, <<"Name=Value; Path=", 16#20>>},
+		{#{path => <<16#3a>>}, <<"Name=Value; Path=", 16#3a>>},
+		{#{path => <<16#3c>>}, <<"Name=Value; Path=", 16#3c>>},
+		{#{path => <<16#7e>>}, <<"Name=Value; Path=", 16#7e>>}
+	],
+	[{Res, fun() -> Res = iolist_to_binary(setcookie(<<"Name">>, <<"Value">>, O)) end}
+		|| {O, Res} <- Tests].
 -endif.
 
 %% Validation functions.
@@ -599,3 +629,13 @@ validate_cookie_value(Value) ->
 
 validate_cookie_octets(<<>>) -> ok;
 validate_cookie_octets(<<C,R/bits>>) when ?IS_COOKIE_OCTET(C) -> validate_cookie_octets(R).
+
+%% path-value and extension-av are any CHAR except CTLs or ";" (RFC6265 4.1.1)
+ensure_attr_value(Value0) ->
+	Value = iolist_to_binary(Value0),
+	ok = validate_attr_value(Value),
+	Value.
+
+validate_attr_value(<<>>) -> ok;
+validate_attr_value(<<C,R/bits>>) when C >= 16#20, C < 16#7f, C =/= 16#3b ->
+	validate_attr_value(R).
