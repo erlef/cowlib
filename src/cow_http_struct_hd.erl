@@ -219,13 +219,66 @@ parse_decimal(R, L1, L2, IntAcc, FracAcc0) when L1 =< 12, L2 >= 1, L2 =< 3 ->
 		0 -> 1
 	end,
 	Int = binary_to_integer(IntAcc),
+	<<Sign, _/bits>> = IntAcc,
 	Frac = case FracAcc of
 		<<>> -> 0;
-		%% Mind the sign.
-		_ when Int < 0 -> -binary_to_integer(FracAcc);
+		%% Mind the sign. Int may be 0 for values such as -0.5.
+		_ when Sign =:= $- -> -binary_to_integer(FracAcc);
 		_ -> binary_to_integer(FracAcc)
 	end,
 	{{decimal, {Int * Mul + Frac, -byte_size(FracAcc)}}, R}.
+
+-ifdef(TEST).
+parse_decimal_signed_zero_test_() ->
+	Tests = [
+		{<<"0.5">>, {item, {decimal, {5, -1}}, []}},
+		{<<"0.05">>, {item, {decimal, {5, -2}}, []}},
+		{<<"0.005">>, {item, {decimal, {5, -3}}, []}},
+		{<<"0.50">>, {item, {decimal, {5, -1}}, []}},
+		{<<"0.500">>, {item, {decimal, {50, -2}}, []}},
+		{<<"0.050">>, {item, {decimal, {5, -2}}, []}},
+		{<<"0.0">>, {item, {decimal, {0, 0}}, []}},
+		{<<"-0.5">>, {item, {decimal, {-5, -1}}, []}},
+		{<<"-0.05">>, {item, {decimal, {-5, -2}}, []}},
+		{<<"-0.005">>, {item, {decimal, {-5, -3}}, []}},
+		{<<"-0.50">>, {item, {decimal, {-5, -1}}, []}},
+		{<<"-0.500">>, {item, {decimal, {-50, -2}}, []}},
+		{<<"-0.050">>, {item, {decimal, {-5, -2}}, []}},
+		{<<"-0.1">>, {item, {decimal, {-1, -1}}, []}},
+		{<<"-0.01">>, {item, {decimal, {-1, -2}}, []}},
+		{<<"-0.001">>, {item, {decimal, {-1, -3}}, []}},
+		{<<"-0.123">>, {item, {decimal, {-123, -3}}, []}},
+		{<<"-0.12">>, {item, {decimal, {-12, -2}}, []}},
+		{<<"-0.0">>, {item, {decimal, {0, 0}}, []}},
+		{<<"-0.00">>, {item, {decimal, {0, 0}}, []}},
+		{<<"-0.000">>, {item, {decimal, {0, 0}}, []}},
+		{<<"-1.5">>, {item, {decimal, {-15, -1}}, []}},
+		{<<"-1.23">>, {item, {decimal, {-123, -2}}, []}},
+		{<<"-1.0">>, {item, {decimal, {-1, 0}}, []}},
+		{<<"-0.5;foo">>, {item, {decimal, {-5, -1}}, [{<<"foo">>, true}]}}
+	],
+	[{V, fun() -> R = parse_item(V) end} || {V, R} <- Tests].
+
+decimal_signed_zero_identity_test_() ->
+	Tests = [
+		<<"0.5">>,
+		<<"0.05">>,
+		<<"0.005">>,
+		<<"0.0">>,
+		<<"-0.5">>,
+		<<"-0.05">>,
+		<<"-0.005">>,
+		<<"-0.1">>,
+		<<"-0.01">>,
+		<<"-0.001">>,
+		<<"-0.123">>,
+		<<"-0.12">>,
+		<<"-1.5">>,
+		<<"-1.23">>,
+		<<"-1.0">>
+	],
+	[{V, fun() -> V = iolist_to_binary(item(parse_item(V))) end} || V <- Tests].
+-endif.
 
 parse_string(<<$\\,$",R/bits>>, Acc) ->
 	parse_string(R, <<Acc/binary,$">>);
@@ -445,15 +498,15 @@ bare_item({decimal, {Base, Exp}}) when Exp >= 0 ->
 bare_item({decimal, {Base, -1}}) ->
 	Int = Base div 10,
 	Frac = abs(Base) rem 10,
-	[integer_to_binary(Int), $., integer_to_binary(Frac)];
+	[decimal_int(Base, Int), $., integer_to_binary(Frac)];
 bare_item({decimal, {Base, -2}}) ->
 	Int = Base div 100,
 	Frac = abs(Base) rem 100,
-	[integer_to_binary(Int), $., integer_to_binary(Frac)];
+	[decimal_int(Base, Int), $., decimal_frac(Frac, 2)];
 bare_item({decimal, {Base, -3}}) ->
 	Int = Base div 1000,
 	Frac = abs(Base) rem 1000,
-	[integer_to_binary(Int), $., integer_to_binary(Frac)];
+	[decimal_int(Base, Int), $., decimal_frac(Frac, 3)];
 bare_item({decimal, {Base, Exp}}) ->
 	Div = exp_div(Exp),
 	Int0 = Base div Div,
@@ -471,11 +524,7 @@ bare_item({decimal, {Base, Exp}}) ->
 		true ->
 			{Int0, Frac1}
 	end,
-	[integer_to_binary(Int), $., if
-		Frac < 10 -> [$0, $0, integer_to_binary(Frac)];
-		Frac < 100 -> [$0, integer_to_binary(Frac)];
-		true -> integer_to_binary(Frac)
-	end];
+	[decimal_int(Base, Int), $., decimal_frac(Frac, 3)];
 bare_item(Integer) when is_integer(Integer) ->
 	integer_to_binary(Integer);
 bare_item(true) ->
@@ -493,6 +542,20 @@ validate_token1(<<C,R/bits>>)
 validate_token1(<<>>) ->
 	ok.
 
+decimal_int(Base, 0) when Base < 0 ->
+	<<"-0">>;
+decimal_int(_, Int) ->
+	integer_to_binary(Int).
+
+decimal_frac(Frac, 2) when Frac < 10 ->
+	[$0, integer_to_binary(Frac)];
+decimal_frac(Frac, 3) when Frac < 10 ->
+	[$0, $0, integer_to_binary(Frac)];
+decimal_frac(Frac, 3) when Frac < 100 ->
+	[$0, integer_to_binary(Frac)];
+decimal_frac(Frac, _) ->
+	integer_to_binary(Frac).
+
 exp_div(0) -> 1;
 exp_div(N) -> 10 * exp_div(N + 1).
 
@@ -508,6 +571,27 @@ params(Params) ->
 	end || Param <- Params].
 
 -ifdef(TEST).
+item_decimal_signed_zero_test_() ->
+	Tests = [
+		{{decimal, {5, -1}}, <<"0.5">>},
+		{{decimal, {5, -2}}, <<"0.05">>},
+		{{decimal, {5, -3}}, <<"0.005">>},
+		{{decimal, {0, 0}}, <<"0.0">>},
+		{{decimal, {-5, -1}}, <<"-0.5">>},
+		{{decimal, {-5, -2}}, <<"-0.05">>},
+		{{decimal, {-5, -3}}, <<"-0.005">>},
+		{{decimal, {-1, -1}}, <<"-0.1">>},
+		{{decimal, {-1, -2}}, <<"-0.01">>},
+		{{decimal, {-1, -3}}, <<"-0.001">>},
+		{{decimal, {-123, -3}}, <<"-0.123">>},
+		{{decimal, {-12, -2}}, <<"-0.12">>},
+		{{decimal, {-15, -1}}, <<"-1.5">>},
+		{{decimal, {-123, -2}}, <<"-1.23">>},
+		{{decimal, {-10, -1}}, <<"-1.0">>}
+	],
+	[{Res, fun() -> Res = iolist_to_binary(item({item, Dec, []})) end}
+		|| {Dec, Res} <- Tests].
+
 struct_hd_identity_test_() ->
 	Files = filelib:wildcard("deps/structured-header-tests/*.json"),
 	lists:flatten([begin
