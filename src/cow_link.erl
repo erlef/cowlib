@@ -23,6 +23,10 @@
 -include("cow_inline.hrl").
 -include("cow_parse.hrl").
 
+-ifdef(TEST).
+-include_lib("stdlib/include/assert.hrl").
+-endif.
+
 -type link() :: #{
 	target := binary(),
 	rel := binary(),
@@ -190,6 +194,42 @@ parse_link_test_() ->
 				rel => <<"copyright">>,
 				attributes => [
 					{<<"anchor">>, <<"#foo">>}
+				]
+			}
+		]},
+		{<<"</>; rel=\"previous\"; title=\"say \\\"hello\\\"\"">>, [
+			#{
+				target => <<"/">>,
+				rel => <<"previous">>,
+				attributes => [
+					{<<"title">>, <<"say \"hello\"">>}
+				]
+			}
+		]},
+		{<<"</>; rel=\"previous\"; title=\"a\\\\b\"">>, [
+			#{
+				target => <<"/">>,
+				rel => <<"previous">>,
+				attributes => [
+					{<<"title">>, <<"a\\b">>}
+				]
+			}
+		]},
+		{<<"</>; rel=\"previous\"; title=\"a; b, <c>=\\\"d\\\"\"">>, [
+			#{
+				target => <<"/">>,
+				rel => <<"previous">>,
+				attributes => [
+					{<<"title">>, <<"a; b, <c>=\"d\"">>}
+				]
+			}
+		]},
+		{<<"</>; rel=\"previous\"; title=\"\"">>, [
+			#{
+				target => <<"/">>,
+				rel => <<"previous">>,
+				attributes => [
+					{<<"title">>, <<>>}
 				]
 			}
 		]}
@@ -364,12 +404,25 @@ link(Links) ->
 	lists:join(<<", ">>, [do_link(Link) || Link <- Links]).
 
 do_link(#{target := TargetURI, rel := Rel, attributes := Params}) ->
+	ok = validate_uri_reference(iolist_to_binary(TargetURI)),
+	ok = validate_rel(iolist_to_binary(Rel)),
 	[
 		$<, TargetURI, <<">"
 		"; rel=\"">>, Rel, $",
-		[[<<"; ">>, Key, <<"=\"">>, escape(iolist_to_binary(Value), <<>>), $"]
-			|| {Key, Value} <- Params]
+		[[
+			<<"; ">>,
+			cow_http:ensure_token(iolist_to_binary(Key)),
+			<<"=\"">>,
+			escape(iolist_to_binary(Value), <<>>),
+			$"
+		] || {Key, Value} <- Params]
 	].
+
+validate_uri_reference(<<>>) -> ok;
+validate_uri_reference(<<C,R/bits>>) when ?IS_URI_CHAR(C) -> validate_uri_reference(R).
+
+validate_rel(<<>>) -> ok;
+validate_rel(<<C,R/bits>>) when ?IS_URI_CHAR(C) or (C =:= $\s) -> validate_rel(R).
 
 escape(<<>>, Acc) -> Acc;
 escape(<<$\\,R/bits>>, Acc) -> escape(R, <<Acc/binary,$\\,$\\>>);
@@ -438,8 +491,70 @@ link_test_() ->
 					{<<"quoted">>, <<"name=\"value\"">>}
 				]
 			}
+		]},
+		{<<"</>; rel=\"previous\"; title=\"say \\\"hello\\\"\"">>, [
+			#{
+				target => <<"/">>,
+				rel => <<"previous">>,
+				attributes => [
+					{<<"title">>, <<"say \"hello\"">>}
+				]
+			}
+		]},
+		{<<"</>; rel=\"previous\"; title=\"a\\\\b\"">>, [
+			#{
+				target => <<"/">>,
+				rel => <<"previous">>,
+				attributes => [
+					{<<"title">>, <<"a\\b">>}
+				]
+			}
+		]},
+		{<<"</>; rel=\"previous\"; title=\"a; b, <c>=\\\"d\\\"\"">>, [
+			#{
+				target => <<"/">>,
+				rel => <<"previous">>,
+				attributes => [
+					{<<"title">>, <<"a; b, <c>=\"d\"">>}
+				]
+			}
+		]},
+		{<<"</>; rel=\"previous\"; title=\"\"">>, [
+			#{
+				target => <<"/">>,
+				rel => <<"previous">>,
+				attributes => [
+					{<<"title">>, <<>>}
+				]
+			}
+		]},
+		{<<"</>; rel=\"start http://example.net/relation/other\"">>, [
+			#{
+				target => <<"/">>,
+				rel => <<"start http://example.net/relation/other">>,
+				attributes => []
+			}
 		]}
 	],
 	[{iolist_to_binary(io_lib:format("~0p", [V])),
 		fun() -> R = iolist_to_binary(link(V)) end} || {R, V} <- Tests].
+
+link_error_test_() ->
+	Tests = [
+		[#{target => <<"/>; rel=\"preconnect\", <https://example.org/">>,
+			rel => <<"self">>, attributes => []}],
+		[#{target => <<"</">>, rel => <<"self">>, attributes => []}],
+		[#{target => <<"/ ">>, rel => <<"self">>, attributes => []}],
+		[#{target => <<"/">>,
+			rel => <<"self\", <https://example.org/>; rel=\"preconnect">>,
+			attributes => []}],
+		[#{target => <<"/">>, rel => <<"self\\">>, attributes => []}],
+		[#{target => <<"/">>, rel => <<"self\r\n">>, attributes => []}],
+		[#{target => <<"/">>, rel => <<"self">>,
+			attributes => [{<<"a\"; rel=\"preconnect">>, <<"b">>}]}],
+		[#{target => <<"/">>, rel => <<"self">>, attributes => [{<<"a b">>, <<"c">>}]}],
+		[#{target => <<"/">>, rel => <<"self">>, attributes => [{<<>>, <<"c">>}]}]
+	],
+	[{iolist_to_binary(io_lib:format("~0p", [V])),
+		fun() -> ?assertError(_, iolist_to_binary(link(V))) end} || V <- Tests].
 -endif.
