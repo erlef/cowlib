@@ -967,9 +967,8 @@ horse_parse_access_control_request_method() ->
 %% Age header.
 
 -spec parse_age(binary()) -> non_neg_integer().
-parse_age(Age) when byte_size(Age) =< ?MAX_DIGITS ->
-	I = binary_to_integer(Age),
-	true = I >= 0,
+parse_age(Age) ->
+	{I, <<>>} = digits(Age),
 	I.
 
 -ifdef(TEST).
@@ -988,7 +987,11 @@ parse_age_error_test_() ->
 	Tests = [
 		<<>>,
 		<<"123, 123">>,
-		<<"4.17">>
+		<<"4.17">>,
+		<<"-42">>,
+		<<"-0">>,
+		<<"+0">>,
+		<<"+42">>
 	],
 	[{V, fun() -> ?assertError(_, parse_age(V)) end} || V <- Tests].
 -endif.
@@ -1697,9 +1700,8 @@ horse_parse_content_language() ->
 %% Content-Length header.
 
 -spec parse_content_length(binary()) -> non_neg_integer().
-parse_content_length(ContentLength) when byte_size(ContentLength) =< ?MAX_DIGITS ->
-	I = binary_to_integer(ContentLength),
-	true = I >= 0,
+parse_content_length(ContentLength) ->
+	{I, <<>>} = digits(ContentLength),
 	I.
 
 -ifdef(TEST).
@@ -1726,7 +1728,11 @@ parse_content_length_error_test_() ->
 		<<>>,
 		<<"-1">>,
 		<<"123, 123">>,
-		<<"4.17">>
+		<<"4.17">>,
+		<<"-42">>,
+		<<"-0">>,
+		<<"+0">>,
+		<<"+42">>
 	],
 	[{V, fun() -> ?assertError(_, parse_content_length(V)) end} || V <- Tests].
 
@@ -2128,15 +2134,17 @@ parse_host(Host) ->
 
 ipv6_address(<< $] >>, IP) ->
 	{<< IP/binary, $] >>, undefined};
-ipv6_address(<< $], $:, Port/bits >>, IP) when byte_size(Port) =< 5 ->
-	{<< IP/binary, $] >>, binary_to_integer(Port)};
+ipv6_address(<< $], $:, Port0/bits >>, IP) when byte_size(Port0) =< 5 ->
+	{Port, <<>>} = digits(Port0),
+	{<< IP/binary, $] >>, Port};
 ipv6_address(<< C, R/bits >>, IP) when ?IS_HEX(C) or (C =:= $:) or (C =:= $.) ->
 	?LOWER(ipv6_address, R, IP).
 
 reg_name(<<>>, Name) ->
 	{Name, undefined};
-reg_name(<< $:, Port/bits >>, Name) when byte_size(Port) =< 5 ->
-	{Name, binary_to_integer(Port)};
+reg_name(<< $:, Port0/bits >>, Name) when byte_size(Port0) =< 5 ->
+	{Port, <<>>} = digits(Port0),
+	{Name, Port};
 reg_name(<< C, R/bits >>, Name) when ?IS_URI_UNRESERVED(C) or ?IS_URI_SUB_DELIMS(C) ->
 	?LOWER(reg_name, R, Name).
 
@@ -2172,6 +2180,19 @@ parse_host_test_() ->
 		{<<"[::ffff:192.0.2.1]">>, {<<"[::ffff:192.0.2.1]">>, undefined}}
 	],
 	[{V, fun() -> R = parse_host(V) end} || {V, R} <- Tests].
+
+parse_host_error_test_() ->
+	Tests = [
+		<<"www.example.org:-8080">>,
+		<<"www.example.org:-0">>,
+		<<"www.example.org:+0">>,
+		<<"www.example.org:+8080">>,
+		<<"[2001:db8::1]:-8080">>,
+		<<"[2001:db8::1]:-0">>,
+		<<"[2001:db8::1]:+0">>,
+		<<"[2001:db8::1]:+8080">>
+	],
+	[{V, fun() -> ?assertError(_, parse_host(V)) end} || V <- Tests].
 
 horse_parse_host_blue_example_org() ->
 	horse:repeat(200000,
@@ -2372,9 +2393,8 @@ parse_link(Link) ->
 %% Max-Forwards header.
 
 -spec parse_max_forwards(binary()) -> non_neg_integer().
-parse_max_forwards(MaxForwards) when byte_size(MaxForwards) =< ?MAX_DIGITS ->
-	I = binary_to_integer(MaxForwards),
-	true = I >= 0,
+parse_max_forwards(MaxForwards) ->
+	{I, <<>>} = digits(MaxForwards),
 	I.
 
 -ifdef(TEST).
@@ -2399,7 +2419,11 @@ parse_max_forwards_error_test_() ->
 	Tests = [
 		<<>>,
 		<<"123, 123">>,
-		<<"4.17">>
+		<<"4.17">>,
+		<<"-42">>,
+		<<"-0">>,
+		<<"+0">>,
+		<<"+42">>
 	],
 	[{V, fun() -> ?assertError(_, parse_max_forwards(V)) end} || V <- Tests].
 -endif.
@@ -2918,8 +2942,8 @@ horse_parse_sec_websocket_protocol_resp() ->
 
 -spec parse_sec_websocket_version_req(binary()) -> websocket_version().
 parse_sec_websocket_version_req(SecWebSocketVersion) when byte_size(SecWebSocketVersion) < 4 ->
-	Version = binary_to_integer(SecWebSocketVersion),
-	true = Version >= 0 andalso Version =< 255,
+	{Version, <<>>} = digits(SecWebSocketVersion),
+	true = Version =< 255,
 	Version.
 
 -ifdef(TEST).
@@ -2940,7 +2964,11 @@ parse_sec_websocket_version_req_error_test_() ->
 		<<>>,
 		<<" ">>,
 		<<"7, 8, 13">>,
-		<<"invalid">>
+		<<"invalid">>,
+		<<"-13">>,
+		<<"-0">>,
+		<<"+0">>,
+		<<"+13">>
 	],
 	[{V, fun() -> ?assertError(_, parse_sec_websocket_version_req(V)) end}
 		|| V <- Tests].

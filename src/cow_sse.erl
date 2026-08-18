@@ -46,6 +46,8 @@
 }.
 -export_type([event/0]).
 
+-include("cow_parse.hrl").
+
 -ifdef(TEST).
 -include_lib("stdlib/include/assert.hrl").
 -endif.
@@ -122,7 +124,7 @@ process_field(<<"data">>, Value, State=#state{data=Data}) ->
 	{ok, State#state{data=[<<$\n>>, Value|Data]}};
 process_field(<<"id">>, Value, State) ->
 	{ok, State#state{last_event_id=Value, last_event_id_set=true}};
-process_field(<<"retry">>, Value, State) ->
+process_field(<<"retry">>, Value = <<C, _/bits>>, State) when ?IS_DIGIT(C) ->
 	try
 		{ok, State#state{retry=binary_to_integer(Value)}}
 	catch _:_ ->
@@ -282,6 +284,22 @@ parse_split_event_test() ->
 		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">>, init()),
 	{event, _, _} = parse(<<"==\n\n">>, State),
 	ok.
+
+parse_retry_error_test_() ->
+	Tests = [
+		<<"-1000">>,
+		<<"-0">>,
+		<<"+0">>,
+		<<"+1000">>
+	],
+	[{V, fun() ->
+		{event, #{data := Data}, State} = parse(<<
+			"retry: ", V/binary, "\n"
+			"data: x\n"
+			"\n">>, init()),
+		<<"x">> = iolist_to_binary(Data),
+		undefined = State#state.retry
+	end} || V <- Tests].
 -endif.
 
 -spec events([event()]) -> iolist().

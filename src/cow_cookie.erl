@@ -45,6 +45,7 @@
 -export_type([parse_opts/0]).
 
 -include("cow_inline.hrl").
+-include("cow_parse.hrl").
 
 -ifdef(TEST).
 -include_lib("stdlib/include/assert.hrl").
@@ -268,7 +269,7 @@ parse_set_cookie_attr(<<"expires">>, Value) ->
 	catch _:_ ->
 		ignore
 	end;
-parse_set_cookie_attr(<<"max-age">>, Value) ->
+parse_set_cookie_attr(<<"max-age">>, Value = <<C, _/bits>>) when ?IS_DIGIT(C); C =:= $- ->
 	try binary_to_integer(Value) of
 		MaxAge when MaxAge =< 0 ->
 			%% Year 0 corresponds to 1 BC.
@@ -337,7 +338,13 @@ parse_set_cookie_test_() ->
 		{<<"a=b; SameSite=Lax">>, {ok, <<"a">>, <<"b">>, #{same_site => lax}}},
 		{<<"a=b; SameSite=Strict">>, {ok, <<"a">>, <<"b">>, #{same_site => strict}}},
 		{<<"a=b; SameSite=Lax; SameSite=Strict">>,
-			{ok, <<"a">>, <<"b">>, #{same_site => strict}}}
+			{ok, <<"a">>, <<"b">>, #{same_site => strict}}},
+		{<<"a=b; Max-Age=-123">>,
+			{ok, <<"a">>, <<"b">>, #{max_age => {{0,1,1},{0,0,0}}}}},
+		{<<"a=b; Max-Age=-0">>,
+			{ok, <<"a">>, <<"b">>, #{max_age => {{0,1,1},{0,0,0}}}}},
+		{<<"a=b; Max-Age=+0">>, {ok, <<"a">>, <<"b">>, #{}}},
+		{<<"a=b; Max-Age=+123">>, {ok, <<"a">>, <<"b">>, #{}}}
 	],
 	[{SetCookie, fun() -> Res = parse_set_cookie(SetCookie) end}
 		|| {SetCookie, Res} <- Tests].
